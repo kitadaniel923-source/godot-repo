@@ -1,0 +1,28 @@
+name: Everglen Runtime Simulation Audit
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  runtime-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run headless Electron simulation audit
+        run: xvfb-run -a env ELECTRON_DISABLE_SANDBOX=1 EVERGLEN_RUNTIME_AUDIT=1 npm start

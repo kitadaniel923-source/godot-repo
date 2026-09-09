@@ -1,0 +1,89 @@
+name: Everglen 3D Asset Bake
+
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: 'Comma-separated files under source_assets/3d'
+        required: true
+        default: 'Mediavel Pack (2).blend,SimplePolygon_LowpolyDocksV3(1).fbx'
+        type: string
+      max_assets:
+        description: 'Maximum mesh objects per source'
+        required: false
+        default: '512'
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  BLENDER_VERSION: '4.5.13'
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Blender LTS
+        run: |
+          curl -L --fail --retry 3 -o /tmp/blender.tar.xz \
+            "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          mkdir -p /opt/blender
+          tar -xJf /tmp/blender.tar.xz -C /opt/blender --strip-components=1
+          /opt/blender/blender --version
+
+      - name: Bake supplied Blend/FBX sources
+        env:
+          SOURCES: ${{ inputs.sources }}
+          MAX_ASSETS: ${{ inputs.max_assets }}
+        run: |
+          rm -rf build/everglen_3d
+          mkdir -p build/everglen_3d
+          IFS=',' read -ra ITEMS <<< "$SOURCES"
+          for item in "${ITEMS[@]}"; do
+            source="$(echo "$item" | xargs)"
+            test -f "source_assets/3d/$source"
+            slug="$(printf '%s' "$source" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')"
+            /opt/blender/blender -b --python tools/blender_export_and_bake.py -- \
+              --source "source_assets/3d/$source" \
+              --output-dir "build/everglen_3d/$slug" \
+              --max-assets "$MAX_ASSETS"
+            python tools/pack_3d_atlas.py \
+              --input-dir "build/everglen_3d/$slug" \
+              --output "assets/everglen/${slug}_atlas.webp" \
+              --manifest "assets/everglen/${slug}_manifest.json"
+          done
+
+      - name: Validate baked atlases
+        run: |
+          python - <<'PY'
+          import glob, json
+          from pathlib import Path
+          atlases=glob.glob('assets/everglen/*_manifest.json')
+          assert atlases, 'No baked manifests generated'
+          for p in atlases:
+              d=json.loads(Path(p).read_text())
+              assert d.get('assets'), f'No assets in {p}'
+              assert int(d.get('framesPerAsset', 0)) >= 4, f'Insufficient views in {p}'
+              print(Path(p).name, len(d['assets']), 'assets x', d['framesPerAsset'], 'views')
+          PY
+
+      - name: Commit generated runtime atlases
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/everglen/*_atlas.webp assets/everglen/*_manifest.json
+          git commit -m 'Bake supplied Blend and FBX assets into runtime atlases' || echo 'No atlas changes to commit'
+          git push
+
+      - name: Upload bake artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: everglen-3d-bake
+          path: |
+            assets/everglen/*_atlas.webp
+            assets/everglen/*_manifest.json
